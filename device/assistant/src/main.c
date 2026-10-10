@@ -239,6 +239,44 @@ static int standby_cfg_get_int(const char *key, int def)
     return def;
 }
 
+/* 读原厂整数类型配置(类型标记 0x04, 小端 int).
+ * sair 链接的 get_config 只支持字符串类型(0x01), 读不了原厂的整数键
+ * (如 BACKLIGHT_DURATION), 故这里直接解析 apconfig 共享内存.
+ * 格式: 键名\0 + 类型(4) + 长度(4) + 偏移(4) + 值(长度字节) */
+static int apconfig_read_int(const char *key, int def)
+{
+    int fd = open("/dev/shm/apconfig", O_RDONLY);
+    if (fd < 0)
+        return def;
+    static char buf[131072];
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return def;
+    buf[n] = '\0';
+    int klen = strlen(key);
+    char *p = buf;
+    while ((p = strstr(p, key)) != NULL)
+    {
+        /* 精确键匹配: 键名后必须是 null */
+        if (p[klen] == '\0')
+        {
+            char *t = p + klen + 1;
+            uint32_t typ = 0, len = 0;
+            memcpy(&typ, t, 4);
+            memcpy(&len, t + 4, 4);
+            if (typ == 4 && len == 4)
+            {
+                int32_t val = 0;
+                memcpy(&val, t + 12, 4);
+                return (int)val;
+            }
+        }
+        p += klen;
+    }
+    return def;
+}
+
 static void sair_emotion_broadcast(int emo_id)
 {
     int msg[4];
@@ -279,9 +317,9 @@ void standby_reload_config(void)
     {
         g_app.standby_text[0] = '\0';
     }
-    /* 待机息屏时长: 跟随原厂"屏保时间"(BACKLIGHT_DURATION, 单位秒).
+    /* 待机息屏时长: 跟随原厂"屏保时间"(BACKLIGHT_DURATION, 整数类型, 单位秒).
      * 0 表示原厂屏保关闭 → 待机不息屏, 一直保持表情. */
-    int screenoff = standby_cfg_get_int("BACKLIGHT_DURATION", 0);
+    int screenoff = apconfig_read_int("BACKLIGHT_DURATION", 0);
     if (screenoff < 0)
         screenoff = 0;
     if (screenoff > 3600)
