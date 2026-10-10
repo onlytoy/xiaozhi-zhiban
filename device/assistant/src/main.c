@@ -242,7 +242,9 @@ static int standby_cfg_get_int(const char *key, int def)
 /* 读原厂整数类型配置(类型标记 0x04, 小端 int).
  * sair 链接的 get_config 只支持字符串类型(0x01), 读不了原厂的整数键
  * (如 BACKLIGHT_DURATION), 故这里直接解析 apconfig 共享内存.
- * 格式: 键名\0 + 类型(4) + 长度(4) + 偏移(4) + 值(长度字节) */
+ * 格式: 键名\0 + 类型(4) + 长度(4) + 偏移(4) + 值(长度字节)
+ * 注意: apconfig 是二进制数据, 内含大量 \0, 不能用 strstr(遇 \0 即停),
+ *       必须用 memcmp 逐字节搜索. */
 static int apconfig_read_int(const char *key, int def)
 {
     int fd = open("/dev/shm/apconfig", O_RDONLY);
@@ -253,26 +255,25 @@ static int apconfig_read_int(const char *key, int def)
     close(fd);
     if (n <= 0)
         return def;
-    buf[n] = '\0';
     int klen = strlen(key);
-    char *p = buf;
-    while ((p = strstr(p, key)) != NULL)
+    for (int i = 0; i + klen + 13 <= n; i++)
     {
+        if (memcmp(buf + i, key, klen) != 0)
+            continue;
         /* 精确键匹配: 键名后必须是 null */
-        if (p[klen] == '\0')
+        if (buf[i + klen] != '\0')
+            continue;
+        char *t = buf + i + klen + 1;
+        uint32_t typ = 0, len = 0;
+        memcpy(&typ, t, 4);
+        memcpy(&len, t + 4, 4);
+        if (typ == 4 && len == 4)
         {
-            char *t = p + klen + 1;
-            uint32_t typ = 0, len = 0;
-            memcpy(&typ, t, 4);
-            memcpy(&len, t + 4, 4);
-            if (typ == 4 && len == 4)
-            {
-                int32_t val = 0;
-                memcpy(&val, t + 12, 4);
-                return (int)val;
-            }
+            int32_t val = 0;
+            memcpy(&val, t + 12, 4);
+            return (int)val;
         }
-        p += klen;
+        i += klen; /* 跳过已匹配的键名, 避免重复 */
     }
     return def;
 }
