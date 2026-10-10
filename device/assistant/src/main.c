@@ -238,6 +238,10 @@ extern int systime_reset_screensaver_timer(void) __attribute__((weak));
 extern int systime_forbid_screensaver(int forbid) __attribute__((weak));
 extern int systime_is_backlight_enabled(void) __attribute__((weak));
 
+/* 待机函数需访问全局 app 上下文; g_app 的定义在文件更后方(约660行),
+ * 此处先于定义出现, 故需前向声明(重复的 extern 声明合法) */
+extern app_context_t g_app;
+
 /* 待机保活间隔: 平台空闲倒计时(CONFIG 的 IDLE_TIME/SLEEP_TIME 粒度通常为分钟级),
  * 60s 重置一次足够且开销可忽略 */
 #define STANDBY_KEEPALIVE_MS 60000u
