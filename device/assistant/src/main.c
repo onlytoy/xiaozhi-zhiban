@@ -227,24 +227,9 @@ static void sair_subtitle_clear(void)
 #define STANDBY_EMOTION_NEUTRAL 0
 #define STANDBY_EMOTION_RELAXED 13
 
-/* 平台电源/屏保接口(systime). 关键:
- *  - 链路加 -Wl,--unresolved-symbols=ignore-all, 未定义符号不报错;
- *  - 但**直接调用**未定义函数会生成 PLT 条目, 动态链接器在加载阶段
- *    解析失败会 FATAL 拒绝启动整个 sair —— 破坏现有可用固件.
- *  - 因此这里用弱符号**函数指针**按需解析(dlsym 语义): 符号缺失时
- *    保持 NULL, 只跳过该功能, 绝不阻断启动. */
-extern int systime_forbid_auto_standby(int forbid) __attribute__((weak));
-extern int systime_reset_screensaver_timer(void) __attribute__((weak));
-extern int systime_forbid_screensaver(int forbid) __attribute__((weak));
-extern int systime_is_backlight_enabled(void) __attribute__((weak));
-
 /* 待机函数需访问全局 app 上下文; g_app 的定义在文件更后方(约660行),
  * 此处先于定义出现, 故需前向声明(重复的 extern 声明合法) */
 extern app_context_t g_app;
-
-/* 待机保活间隔: 平台空闲倒计时(CONFIG 的 IDLE_TIME/SLEEP_TIME 粒度通常为分钟级),
- * 60s 重置一次足够且开销可忽略 */
-#define STANDBY_KEEPALIVE_MS 60000u
 
 static int standby_cfg_get_int(const char *key, int def)
 {
@@ -273,26 +258,6 @@ static void sair_standby_anim_push(void)
     }
 }
 
-/** 待机保活: 压住平台自身的空闲待机/屏保倒计时, 避免待机中小智界面被系统熄灭.
- *  符号可能不存在(老固件) → 指针为 NULL, 仅跳过, 不影响其它逻辑. */
-static void standby_keep_awake(void)
-{
-    if (!systime_forbid_auto_standby || !systime_reset_screensaver_timer)
-    {
-        /* 只提示一次, 避免日志刷屏 */
-        static int warned = 0;
-        if (!warned)
-        {
-            warned = 1;
-            PLOG_W("STANDBY", "systime 接口不可用, 待机保活停用(系统待机倒计时仍生效)");
-        }
-        return;
-    }
-    systime_forbid_auto_standby(1);
-    systime_forbid_screensaver(1);
-    systime_reset_screensaver_timer();
-}
-
 /** 重载待机配置(启动与 PUT /api/assistant/config 时调用) */
 void standby_reload_config(void)
 {
@@ -314,8 +279,16 @@ void standby_reload_config(void)
     {
         g_app.standby_text[0] = '\0';
     }
-    PLOG_I("STANDBY", "配置: enable=%d anim_id=%d repeat=%ds text='%s'",
-           g_app.standby_enable, g_app.standby_anim_id, rep, g_app.standby_text);
+    /* 待机息屏时长: 跟随原厂"屏保时间"(BACKLIGHT_DURATION, 单位秒).
+     * 0 表示原厂屏保关闭 → 待机不息屏, 一直保持表情. */
+    int screenoff = standby_cfg_get_int("BACKLIGHT_DURATION", 0);
+    if (screenoff < 0)
+        screenoff = 0;
+    if (screenoff > 3600)
+        screenoff = 3600;
+    g_app.standby_screenoff_ms = (uint64_t)screenoff * 1000u;
+    PLOG_I("STANDBY", "配置: enable=%d anim_id=%d repeat=%ds screenoff=%ds text='%s'",
+           g_app.standby_enable, g_app.standby_anim_id, rep, screenoff, g_app.standby_text);
 }
 
 /** 进入待机: 点亮相机会话背光 + 推送待机表情/文字; 唤醒词监听保持可用 */
@@ -324,11 +297,12 @@ static void sair_standby_enter(void)
     g_app.standby_active = 1;
     g_app.standby_enter_ms = get_time_ms();
     g_app.standby_last_anim_ms = g_app.standby_enter_ms;
+    g_app.standby_screenoff_done = 0;
     display_ctrl_manual_on();  /* 已亮返回 1, 不影响原逻辑 */
-    standby_keep_awake();      /* 立即压住平台空闲待机倒计时 */
     /* 字幕清屏不改: Cleaning 已发 0x231(容器 idle 化), 待机文字在其后推送 */
     sair_standby_anim_push();
-    PLOG_I("STANDBY", "进入待机(会话结束不回主界面), anim_id=%d", g_app.standby_anim_id);
+    PLOG_I("STANDBY", "进入待机(会话结束不回主界面), anim_id=%d, %llums 后息屏",
+           g_app.standby_anim_id, (unsigned long long)g_app.standby_screenoff_ms);
 }
 
 /** 退出待机: 回主界面(原厂行为) */
@@ -345,7 +319,7 @@ static void sair_standby_exit(const char *reason)
     PLOG_I("STANDBY", "退出待机(%s), 广播 MSG_SAIR_END ret=%d", reason, ret);
 }
 
-/** 待机轮询: 周期性重播待机表情, 维持"待机中"提示 */
+/** 待机轮询: 到点息屏(跟随原厂屏保时间) + 周期性重播待机表情 */
 static void standby_tick(void)
 {
     if (!g_app.standby_active)
@@ -356,13 +330,17 @@ static void standby_tick(void)
         return;
     }
     uint64_t now = get_time_ms();
-    /* 每 60s 压一次平台空闲倒计时 */
-    static uint64_t last_keepalive_ms = 0;
-    if (now - last_keepalive_ms >= STANDBY_KEEPALIVE_MS)
+
+    /* 待机超时 → 息屏(关背光). 触摸/按键会经 display_ctrl_notify_input 亮屏. */
+    if (g_app.standby_screenoff_ms > 0 && !g_app.standby_screenoff_done &&
+        now - g_app.standby_enter_ms >= g_app.standby_screenoff_ms)
     {
-        last_keepalive_ms = now;
-        standby_keep_awake();
+        g_app.standby_screenoff_done = 1;
+        display_ctrl_manual_off();
+        PLOG_I("STANDBY", "待机超时息屏 (%llums)", (unsigned long long)g_app.standby_screenoff_ms);
     }
+
+    /* 待机表情重播(可选, 0=不重播) */
     if (g_app.standby_repeat_ms == 0)
         return;
     if (now - g_app.standby_last_anim_ms >= g_app.standby_repeat_ms)

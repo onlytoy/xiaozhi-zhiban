@@ -104,6 +104,9 @@ typedef struct app_context_t {
     volatile int standby_active;     /* 运行态: 1=当前处于待机 */
     uint64_t standby_enter_ms;
     uint64_t standby_last_anim_ms;
+    uint64_t standby_screenoff_ms;   /* 待机多久后息屏(ms), 0=不息屏;
+                                      * 取自原厂屏保时间 BACKLIGHT_DURATION */
+    int standby_screenoff_done;      /* 本次待机是否已息屏(避免重复调用) */
     char custom_ws_url[512];
 } app_context_t;
 
