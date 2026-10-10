@@ -249,10 +249,14 @@ static int apconfig_read_int(const char *key, int def)
 {
     int fd = open("/dev/shm/apconfig", O_RDONLY);
     if (fd < 0)
+    {
+        PLOG_W("STANDBY", "apconfig_read_int('%s'): open失败 errno=%d", key, errno);
         return def;
+    }
     static char buf[131072];
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
+    PLOG_I("STANDBY", "apconfig_read_int('%s'): read n=%d", key, n);
     if (n <= 0)
         return def;
     int klen = strlen(key);
@@ -267,14 +271,17 @@ static int apconfig_read_int(const char *key, int def)
         uint32_t typ = 0, len = 0;
         memcpy(&typ, t, 4);
         memcpy(&len, t + 4, 4);
+        PLOG_I("STANDBY", "apconfig_read_int('%s'): 命中@%d typ=%u len=%u", key, i, typ, len);
         if (typ == 4 && len == 4)
         {
             int32_t val = 0;
             memcpy(&val, t + 12, 4);
+            PLOG_I("STANDBY", "apconfig_read_int('%s'): val=%d", key, val);
             return (int)val;
         }
         i += klen; /* 跳过已匹配的键名, 避免重复 */
     }
+    PLOG_W("STANDBY", "apconfig_read_int('%s'): 未命中", key);
     return def;
 }
 
