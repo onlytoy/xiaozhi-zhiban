@@ -82,6 +82,10 @@
 
 #define LOG_TAG "XIAOZHI"
 
+/* 待机状态(standby 域): 会话结束停留小智界面 + 待机表情, 触摸/HOME/BACK 才回主界面.
+ * 定义于 main.c, 供 api_server.c 在运行时配置后重载. */
+void standby_reload_config(void);
+
 #define LOG_E(tag, fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define LOG_W(tag, fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define LOG_I(tag, fmt, ...) fprintf(stdout, "[I][%s] " fmt "\n", tag, ##__VA_ARGS__)

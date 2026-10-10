@@ -94,6 +94,16 @@ typedef struct app_context_t {
     int listening_mode;
     int aec_mode;          /* AEC方案: 0=本地NLMS(默认) 1=云端(timestamp配对) */
     int precache_enabled;
+
+    /* 待机状态（会话结束不回主界面，停留小智界面并显示待机表情；
+     * 触摸/HOME/BACK 键才回主界面；期间唤醒词监听保持可用） */
+    int standby_enable;              /* 0=关闭(原行为: 会话结束即回主界面) 1=开启 */
+    int standby_anim_id;             /* 待机表情 ID(见 emotion_map), 默认 13=relaxed */
+    uint64_t standby_repeat_ms;      /* 待机表情重播间隔(ms), 0=仅进入时播一次 */
+    char standby_text[64];           /* 待机时屏幕文字(空=不显示文字) */
+    volatile int standby_active;     /* 运行态: 1=当前处于待机 */
+    uint64_t standby_enter_ms;
+    uint64_t standby_last_anim_ms;
     char custom_ws_url[512];
 } app_context_t;
 

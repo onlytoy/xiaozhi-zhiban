@@ -1,0 +1,43 @@
+name: build-sair
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 触发原因(可选)
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载 Buildroot ARM 工具链
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          wget -q https://raw.githubusercontent.com/ChrisTheCoolHut/uClibc-Cross-Compilers/master/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot.tar.xz
+          tar -xf arm-buildroot-linux-uclibcgnueabi_sdk-buildroot.tar.xz
+
+      - name: 重定位工具链
+        run: |
+          cd toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot
+          bash ./relocate-sdk.sh
+
+      - name: 编译 assistant (sair)
+        run: |
+          cd device/assistant
+          bash build.sh
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: sair-standby
+          path: |
+            device/assistant/build/sair
+            device/assistant/build/version.h
+          if-no-files-found: error

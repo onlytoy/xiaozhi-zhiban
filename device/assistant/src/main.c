@@ -211,6 +211,163 @@ static void sair_subtitle_clear(void)
     g_last_end_evt_ms = g_last_bcast_ms;
 }
 
+/* ==================== 待机状态(会话结束停留小智界面) ====================
+ * 需求: 会话结束后**不回主界面**, 屏幕停在小智界面并显示"待机中"表情;
+ *       唤醒词监听保持可用(说唤醒词即可继续对话); 触摸屏/HOME/BACK 键
+ *       才回主界面(退出待机)。
+ * 实现:
+ *  - 拦截 broadcast_sair_end(): 待机使能时改用 sair_standby_enter(), 不广播 MSG_SAIR_END,
+ *    平台因此不会切回桌面; 平台仍复用小智场景(wiki), 表情通道继续可用。
+ *  - 待机表情走与协议 emotion 相同的通道(广播 MSG_SAIR_EMOTION)。
+ *  - 待机文字走原生字幕通道(0x233+事件5), 首次/重播时推送。
+ *  - 退出(touch/HOME/BACK)时广播 MSG_SAIR_END, 恢复原厂回主界面行为。
+ * 注意: MSG_SAIR_END 的拦截必须只发生在"会话自然结束"路径; 用户主动退出
+ *       按键与卸载/关机等其它路径仍照常广播。 */
+
+#define STANDBY_EMOTION_NEUTRAL 0
+#define STANDBY_EMOTION_RELAXED 13
+
+/* 平台电源/屏保接口(systime). 关键:
+ *  - 链路加 -Wl,--unresolved-symbols=ignore-all, 未定义符号不报错;
+ *  - 但**直接调用**未定义函数会生成 PLT 条目, 动态链接器在加载阶段
+ *    解析失败会 FATAL 拒绝启动整个 sair —— 破坏现有可用固件.
+ *  - 因此这里用弱符号**函数指针**按需解析(dlsym 语义): 符号缺失时
+ *    保持 NULL, 只跳过该功能, 绝不阻断启动. */
+extern int systime_forbid_auto_standby(int forbid) __attribute__((weak));
+extern int systime_reset_screensaver_timer(void) __attribute__((weak));
+extern int systime_forbid_screensaver(int forbid) __attribute__((weak));
+extern int systime_is_backlight_enabled(void) __attribute__((weak));
+
+/* 待机保活间隔: 平台空闲倒计时(CONFIG 的 IDLE_TIME/SLEEP_TIME 粒度通常为分钟级),
+ * 60s 重置一次足够且开销可忽略 */
+#define STANDBY_KEEPALIVE_MS 60000u
+
+static int standby_cfg_get_int(const char *key, int def)
+{
+    char b[32];
+    if (get_config(key, b, sizeof(b)) > 0 && b[0])
+        return atoi(b);
+    return def;
+}
+
+static void sair_emotion_broadcast(int emo_id)
+{
+    int msg[4];
+    memset(msg, 0, sizeof(msg));
+    msg[0] = MSG_SAIR_EMOTION;
+    msg[1] = emo_id;
+    int ret = sair_broadcast(msg);
+    PLOG_I("IPC", "广播 MSG_SAIR_EMOTION id=%d ret=%d", emo_id, ret);
+}
+
+static void sair_standby_anim_push(void)
+{
+    sair_emotion_broadcast(g_app.standby_anim_id);
+    if (g_app.standby_text[0])
+    {
+        sair_subtitle_push(g_app.standby_text);  /* 待机文字(可留空) */
+    }
+}
+
+/** 待机保活: 压住平台自身的空闲待机/屏保倒计时, 避免待机中小智界面被系统熄灭.
+ *  符号可能不存在(老固件) → 指针为 NULL, 仅跳过, 不影响其它逻辑. */
+static void standby_keep_awake(void)
+{
+    if (!systime_forbid_auto_standby || !systime_reset_screensaver_timer)
+    {
+        /* 只提示一次, 避免日志刷屏 */
+        static int warned = 0;
+        if (!warned)
+        {
+            warned = 1;
+            PLOG_W("STANDBY", "systime 接口不可用, 待机保活停用(系统待机倒计时仍生效)");
+        }
+        return;
+    }
+    systime_forbid_auto_standby(1);
+    systime_forbid_screensaver(1);
+    systime_reset_screensaver_timer();
+}
+
+/** 重载待机配置(启动与 PUT /api/assistant/config 时调用) */
+void standby_reload_config(void)
+{
+    g_app.standby_enable = standby_cfg_get_int("STANDBY_ENABLE", 0) ? 1 : 0;
+    g_app.standby_anim_id = standby_cfg_get_int(
+        "STANDBY_ANIM_ID", g_app.standby_enable ? STANDBY_EMOTION_RELAXED : STANDBY_EMOTION_NEUTRAL);
+    if (g_app.standby_anim_id < 0 || g_app.standby_anim_id > 14)
+    {
+        g_app.standby_anim_id = STANDBY_EMOTION_RELAXED;
+    }
+    int rep = standby_cfg_get_int("STANDBY_REPEAT_SEC", 0);
+    if (rep < 0)
+        rep = 0;
+    if (rep > 600)
+        rep = 600;
+    g_app.standby_repeat_ms = (uint64_t)rep * 1000u;
+    memset(g_app.standby_text, 0, sizeof(g_app.standby_text));
+    if (get_config("STANDBY_TEXT", g_app.standby_text, sizeof(g_app.standby_text)) <= 0)
+    {
+        g_app.standby_text[0] = '\0';
+    }
+    PLOG_I("STANDBY", "配置: enable=%d anim_id=%d repeat=%ds text='%s'",
+           g_app.standby_enable, g_app.standby_anim_id, rep, g_app.standby_text);
+}
+
+/** 进入待机: 点亮相机会话背光 + 推送待机表情/文字; 唤醒词监听保持可用 */
+static void sair_standby_enter(void)
+{
+    g_app.standby_active = 1;
+    g_app.standby_enter_ms = get_time_ms();
+    g_app.standby_last_anim_ms = g_app.standby_enter_ms;
+    display_ctrl_manual_on();  /* 已亮返回 1, 不影响原逻辑 */
+    standby_keep_awake();      /* 立即压住平台空闲待机倒计时 */
+    /* 字幕清屏不改: Cleaning 已发 0x231(容器 idle 化), 待机文字在其后推送 */
+    sair_standby_anim_push();
+    PLOG_I("STANDBY", "进入待机(会话结束不回主界面), anim_id=%d", g_app.standby_anim_id);
+}
+
+/** 退出待机: 回主界面(原厂行为) */
+static void sair_standby_exit(const char *reason)
+{
+    if (!g_app.standby_active)
+        return;
+    g_app.standby_active = 0;
+    sair_subtitle_clear();  /* 清待机文字, 容器回 idle */
+    int msg[4];
+    memset(msg, 0, sizeof(msg));
+    msg[0] = MSG_SAIR_END;
+    int ret = sair_broadcast(msg);
+    PLOG_I("STANDBY", "退出待机(%s), 广播 MSG_SAIR_END ret=%d", reason, ret);
+}
+
+/** 待机轮询: 周期性重播待机表情, 维持"待机中"提示 */
+static void standby_tick(void)
+{
+    if (!g_app.standby_active)
+        return;
+    if (g_app.standby_enable != 1)
+    {
+        sair_standby_exit("config-disabled");
+        return;
+    }
+    uint64_t now = get_time_ms();
+    /* 每 60s 压一次平台空闲倒计时 */
+    static uint64_t last_keepalive_ms = 0;
+    if (now - last_keepalive_ms >= STANDBY_KEEPALIVE_MS)
+    {
+        last_keepalive_ms = now;
+        standby_keep_awake();
+    }
+    if (g_app.standby_repeat_ms == 0)
+        return;
+    if (now - g_app.standby_last_anim_ms >= g_app.standby_repeat_ms)
+    {
+        g_app.standby_last_anim_ms = now;
+        sair_standby_anim_push();
+    }
+}
+
 static void subtitle_set(int type, const char *text)
 {
     pthread_mutex_lock(&g_subtitle_mutex);
@@ -920,6 +1077,14 @@ static void broadcast_sair_awake(int wakeup_result)
  */
 static void broadcast_sair_end(void)
 {
+    /* 待机模式: 会话结束**不回主界面**, 改进入待机(小智界面停留 + 待机表情).
+     * 只在"会话进行过"时生效, 避免开机/激活阶段被误判为待机. */
+    if (g_app.standby_enable == 1 && g_app.in_session)
+    {
+        sair_standby_enter();
+        return;
+    }
+    g_app.standby_active = 0;
     int msg[4] = {MSG_SAIR_END, 0, 0, 0}; /* MSG_SAIR_END: 平台SDK定义的IPC消息ID - 助手会话结束 */
     int ret = sair_broadcast(msg);
     PLOG_I("IPC", "广播 MSG_SAIR_END (0x%X) ret=%d", MSG_SAIR_END, ret);
@@ -982,6 +1147,17 @@ static void on_key_event(int key_code, void *user_data)
 {
     app_context_t *app = (app_context_t *)user_data;
     PLOG_I("KEY", "按键事件: code=%d", key_code);
+
+    /* 待机态: 触摸屏按键(HOME/BACK)即退出待机回主界面, 并消费本次按键
+     * (不透传, 避免同时触发原来的"会话中止"路径) */
+    if (app->standby_active)
+    {
+        char rbuf[32];
+        snprintf(rbuf, sizeof(rbuf), "key-%d", key_code);
+        sair_standby_exit(rbuf);
+        return;
+    }
+
     if (key_code == GOODIX_KEY_BACK)
     {
         app->pending_key_exit = 1;
@@ -1312,9 +1488,7 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 emotion_id = 0;
                 PLOG_D("PROTO", "未知表情 '%s', 使用默认值", emotion_str);
             }
-            int msg[4] = {MSG_SAIR_EMOTION, emotion_id, 0, 0};
-            int ret = sair_broadcast(msg);
-            PLOG_I("IPC", "广播 MSG_SAIR_EMOTION id=%d ret=%d", emotion_id, ret);
+            sair_emotion_broadcast(emotion_id);
         }
     }
     else if (strcmp(type_str, "goodbye") == 0)
@@ -2864,6 +3038,9 @@ int main(int argc, char *argv[])
     if (app->custom_ws_url[0])
         PLOG_I("INIT", "自定义WS URL: %s", app->custom_ws_url);
 
+    /* 待机状态配置(会话结束停留小智界面 + 待机表情) */
+    standby_reload_config();
+
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)
     {
@@ -3175,6 +3352,9 @@ int main(int argc, char *argv[])
 
         /* 字幕打字机推进 + 自动清屏 */
         subtitle_typing_tick();
+
+        /* 待机态轮询: 周期性重播待机表情 / 配置关闭时自动退出待机 */
+        standby_tick();
 
         /* 每日动画占位维护(60s 节流, 配置变化时生效) */
         boot_push_tick();

@@ -126,6 +126,9 @@ void api_server_write_config(void)
         snprintf(so_buf, sizeof(so_buf), "0");
     /* 当前系统音量(原生 sound 库, 0-40; -1=原生库未加载) */
     int vol = (g_app.mcp.sound_get_sys_volume) ? g_app.mcp.sound_get_sys_volume() : -1;
+    /* 待机状态配置(standby 域, libapconfig 持久) */
+    char esc_standby_text[256];
+    json_escape(g_app.standby_text, esc_standby_text, sizeof(esc_standby_text));
     char buf[4096];
     int len = snprintf(buf, sizeof(buf),
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
@@ -133,6 +136,8 @@ void api_server_write_config(void)
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
         "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,\"volume\":%d,"
+        "\"standby_enable\":%d,\"standby_anim_id\":%d,\"standby_repeat_sec\":%d,"
+        "\"standby_text\":\"%s\",\"standby_active\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"spans\":\"%s\",\"in_span\":%d}}}\n",
@@ -151,6 +156,11 @@ void api_server_write_config(void)
         boot_push_disable_enabled(),
         atoi(so_buf),
         vol,
+        g_app.standby_enable,
+        g_app.standby_anim_id,
+        (int)(g_app.standby_repeat_ms / 1000u),
+        esc_standby_text,
+        g_app.standby_active ? 1 : 0,
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -481,6 +491,50 @@ void api_server_check_commands(void)
                 sync_config();
                 display_ctrl_reload_config();
                 PLOG_I(TAG, "screen_off_idle_sec=%d 已设置(0=不息屏)", val);
+                api_server_write_config();
+            }
+        }
+        {
+            /* 待机状态(standby 域): 会话结束停留小智界面 + 待机表情, 触摸/HOME 才回主界面.
+             * 与 screen_off_idle_sec 同款持久化(libapconfig). 关闭时立即退出待机. */
+            int val = -1;
+            int changed = 0;
+            if (parse_json_int(buf, "standby_enable", &val) == 0 && val >= 0 && val <= 1)
+            {
+                char sv[8];
+                snprintf(sv, sizeof(sv), "%d", val);
+                set_config("STANDBY_ENABLE", sv, strlen(sv));
+                changed = 1;
+            }
+            if (parse_json_int(buf, "standby_anim_id", &val) == 0 && val >= 0 && val <= 14)
+            {
+                char sv[8];
+                snprintf(sv, sizeof(sv), "%d", val);
+                set_config("STANDBY_ANIM_ID", sv, strlen(sv));
+                changed = 1;
+            }
+            if (parse_json_int(buf, "standby_repeat_sec", &val) == 0 && val >= 0 && val <= 600)
+            {
+                char sv[8];
+                snprintf(sv, sizeof(sv), "%d", val);
+                set_config("STANDBY_REPEAT_SEC", sv, strlen(sv));
+                changed = 1;
+            }
+            {
+                char stext[64];
+                if (parse_json_str(buf, "standby_text", stext, sizeof(stext)) == 0)
+                {
+                    set_config("STANDBY_TEXT", stext, strlen(stext));
+                    changed = 1;
+                }
+            }
+            if (changed)
+            {
+                sync_config();
+                standby_reload_config();
+                PLOG_I(TAG, "standby 配置已更新: enable=%d anim=%d repeat=%ds",
+                       g_app.standby_enable, g_app.standby_anim_id,
+                       (int)(g_app.standby_repeat_ms / 1000u));
                 api_server_write_config();
             }
         }
