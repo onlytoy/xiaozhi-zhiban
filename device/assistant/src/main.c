@@ -357,6 +357,8 @@ static void sair_standby_exit(const char *reason)
     if (!g_app.standby_active)
         return;
     g_app.standby_active = 0;
+    g_app.standby_screenoff_done = 0;
+    display_ctrl_manual_on();  /* 退出待机回桌面: 息屏态则亮屏 */
     sair_subtitle_clear();  /* 清待机文字, 容器回 idle */
     int msg[4];
     memset(msg, 0, sizeof(msg));
@@ -377,51 +379,14 @@ static void standby_tick(void)
     }
     uint64_t now = get_time_ms();
 
-    /* 待机超时 → 息屏(关背光). 触摸/按键会经 display_ctrl_notify_input 亮屏. */
+    /* 待机超时 → 息屏(关背光). 触摸/按键会经 display_ctrl_notify_input 亮屏.
+     * "被原厂顶回"的重新息屏由 display_ctrl 内部统一处理, 此处不再直接写背光. */
     if (g_app.standby_screenoff_ms > 0 && !g_app.standby_screenoff_done &&
         now - g_app.standby_enter_ms >= g_app.standby_screenoff_ms)
     {
         g_app.standby_screenoff_done = 1;
         display_ctrl_manual_off();
         PLOG_I("STANDBY", "待机超时息屏 (%llums)", (unsigned long long)g_app.standby_screenoff_ms);
-    }
-
-    /* 息屏后盯住背光: 原厂系统可能在夜间把背光顶回(亮屏), 这里一旦发现
-     * bl_power 被改成 0, 立即重新写回 1, 保证"待机一直息屏直到触摸/按键/唤醒". */
-    if (g_app.standby_screenoff_done)
-    {
-        static uint64_t last_bl_check_ms = 0;
-        if (now - last_bl_check_ms >= 5000)
-        {
-            last_bl_check_ms = now;
-            int bfd = open("/sys/class/backlight/owl_backlight/bl_power", O_RDONLY);
-            if (bfd >= 0)
-            {
-                char c = '1';
-                if (read(bfd, &c, 1) > 0 && c == '0')
-                {
-                    close(bfd);
-                    int wfd = open("/sys/class/backlight/owl_backlight/bl_power", O_WRONLY);
-                    if (wfd >= 0)
-                    {
-                        write(wfd, "1", 1);
-                        close(wfd);
-                        /* 按键光跟随屏幕一起灭 */
-                        int kfd = open("/sys/class/input/input2/bl_onoff", O_WRONLY);
-                        if (kfd >= 0)
-                        {
-                            write(kfd, "0", 1);
-                            close(kfd);
-                        }
-                        PLOG_I("STANDBY", "息屏被原厂顶回, 已重新息屏");
-                    }
-                }
-                else
-                {
-                    close(bfd);
-                }
-            }
-        }
     }
 
     /* 待机表情重播(可选, 0=不重播) */
@@ -2641,6 +2606,9 @@ static void process_pending_wakeup(app_context_t *app)
     app->last_wakeup_ms = now;
     app->in_session = 1;
     app->session_start_ms = now;
+    app->standby_active = 0;        /* 离开待机进入对话 */
+    app->standby_screenoff_done = 0;
+    display_ctrl_manual_on();       /* 待机息屏态被语音唤醒: 亮屏进入对话 */
 
     if (app->recorder_initialized && app->precache_enabled)
     {

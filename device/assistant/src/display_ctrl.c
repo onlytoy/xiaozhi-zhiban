@@ -19,7 +19,6 @@
 #define BL_BASE       "/sys/class/backlight/owl_backlight/"
 #define BL_POWER      BL_BASE "bl_power"
 #define BL_BRIGHTNESS BL_BASE "brightness"
-#define KEY_BL_ONOFF  "/sys/class/input/input2/bl_onoff"   /* 触摸按键背光 */
 
 #define POLL_INTERVAL_MS 500
 
@@ -77,6 +76,21 @@ static int read_brightness(int defval)
     return v;
 }
 
+static int read_bl_power(void)
+{
+    int fd = open(BL_POWER, O_RDONLY);
+    if (fd < 0)
+        return 1;
+    char c = '1';
+    if (read(fd, &c, 1) > 0)
+    {
+        close(fd);
+        return (c == '0') ? 0 : 1;
+    }
+    close(fd);
+    return 1;
+}
+
 static void screen_off_apply(void)
 {
     if (g_dc.screen_off)
@@ -85,7 +99,6 @@ static void screen_off_apply(void)
     if (write_sysfs(BL_POWER, "1") == 0)
     {
         g_dc.screen_off = 1;
-        write_sysfs(KEY_BL_ONOFF, "0");  /* 按键光跟随屏幕一起灭 */
         PLOG_I("DISP", "息屏 (saved brightness=%d)", g_dc.saved_brightness);
     }
 }
@@ -98,7 +111,6 @@ static void screen_on_restore(const char *reason)
     snprintf(buf, sizeof(buf), "%d", g_dc.saved_brightness > 0 ? g_dc.saved_brightness : 200);
     write_sysfs(BL_POWER, "0");
     write_sysfs(BL_BRIGHTNESS, buf);
-    write_sysfs(KEY_BL_ONOFF, "1");  /* 按键光跟随屏幕一起亮 */
     g_dc.screen_off = 0;
     PLOG_I("DISP", "亮屏 (%s, brightness=%s)", reason, buf);
 }
@@ -118,6 +130,16 @@ static void *dc_thread_func(void *arg)
             now_ms() - g_dc.last_activity_ms >= (uint64_t)g_dc.interval_sec * 1000u)
         {
             screen_off_apply();
+        }
+
+        /* 保持息屏: 原厂系统可能在夜间把背光顶回(bl_power 被写 0),
+         * 这里发现 screen_off 状态与实际背光不符时立即重新息屏.
+         * 统一在 display_ctrl 内管理, 保证状态一致(触摸亮屏会走
+         * screen_on_restore 把 screen_off 清 0, 不会被这里误伤). */
+        if (g_dc.screen_off && read_bl_power() == 0)
+        {
+            write_sysfs(BL_POWER, "1");
+            PLOG_I("DISP", "息屏被顶回, 重新息屏");
         }
     }
     return NULL;
