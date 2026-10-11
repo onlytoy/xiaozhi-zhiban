@@ -406,6 +406,13 @@ static void standby_tick(void)
                     {
                         write(wfd, "1", 1);
                         close(wfd);
+                        /* 按键光跟随屏幕一起灭 */
+                        int kfd = open("/sys/class/input/input2/bl_onoff", O_WRONLY);
+                        if (kfd >= 0)
+                        {
+                            write(kfd, "0", 1);
+                            close(kfd);
+                        }
                         PLOG_I("STANDBY", "息屏被原厂顶回, 已重新息屏");
                     }
                 }

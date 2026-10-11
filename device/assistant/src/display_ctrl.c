@@ -19,6 +19,7 @@
 #define BL_BASE       "/sys/class/backlight/owl_backlight/"
 #define BL_POWER      BL_BASE "bl_power"
 #define BL_BRIGHTNESS BL_BASE "brightness"
+#define KEY_BL_ONOFF  "/sys/class/input/input2/bl_onoff"   /* 触摸按键背光 */
 
 #define POLL_INTERVAL_MS 500
 
@@ -84,6 +85,7 @@ static void screen_off_apply(void)
     if (write_sysfs(BL_POWER, "1") == 0)
     {
         g_dc.screen_off = 1;
+        write_sysfs(KEY_BL_ONOFF, "0");  /* 按键光跟随屏幕一起灭 */
         PLOG_I("DISP", "息屏 (saved brightness=%d)", g_dc.saved_brightness);
     }
 }
@@ -96,6 +98,7 @@ static void screen_on_restore(const char *reason)
     snprintf(buf, sizeof(buf), "%d", g_dc.saved_brightness > 0 ? g_dc.saved_brightness : 200);
     write_sysfs(BL_POWER, "0");
     write_sysfs(BL_BRIGHTNESS, buf);
+    write_sysfs(KEY_BL_ONOFF, "1");  /* 按键光跟随屏幕一起亮 */
     g_dc.screen_off = 0;
     PLOG_I("DISP", "亮屏 (%s, brightness=%s)", reason, buf);
 }
