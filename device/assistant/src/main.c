@@ -386,6 +386,37 @@ static void standby_tick(void)
         PLOG_I("STANDBY", "待机超时息屏 (%llums)", (unsigned long long)g_app.standby_screenoff_ms);
     }
 
+    /* 息屏后盯住背光: 原厂系统可能在夜间把背光顶回(亮屏), 这里一旦发现
+     * bl_power 被改成 0, 立即重新写回 1, 保证"待机一直息屏直到触摸/按键/唤醒". */
+    if (g_app.standby_screenoff_done)
+    {
+        static uint64_t last_bl_check_ms = 0;
+        if (now - last_bl_check_ms >= 5000)
+        {
+            last_bl_check_ms = now;
+            int bfd = open("/sys/class/backlight/owl_backlight/bl_power", O_RDONLY);
+            if (bfd >= 0)
+            {
+                char c = '1';
+                if (read(bfd, &c, 1) > 0 && c == '0')
+                {
+                    close(bfd);
+                    int wfd = open("/sys/class/backlight/owl_backlight/bl_power", O_WRONLY);
+                    if (wfd >= 0)
+                    {
+                        write(wfd, "1", 1);
+                        close(wfd);
+                        PLOG_I("STANDBY", "息屏被原厂顶回, 已重新息屏");
+                    }
+                }
+                else
+                {
+                    close(bfd);
+                }
+            }
+        }
+    }
+
     /* 待机表情重播(可选, 0=不重播) */
     if (g_app.standby_repeat_ms == 0)
         return;
