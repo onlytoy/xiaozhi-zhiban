@@ -157,6 +157,15 @@ void display_ctrl_start(void)
     g_dc.interval_sec = cfg_get_int("SCREEN_OFF_IDLE_SEC", 0);
     g_dc.last_activity_ms = now_ms();
 
+    /* 热更新(execvp 原地替换)后内存状态重置, 但硬件背光保留上次状态.
+     * 若实际背光已关(bl_power=1), 同步 screen_off=1 并保存当前亮度,
+     * 避免"内存以为亮、硬件实际黑"导致后续唤醒不亮屏. */
+    if (read_bl_power() == 1)
+    {
+        g_dc.screen_off = 1;
+        g_dc.saved_brightness = read_brightness(200);
+    }
+
     g_dc.running = 1;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
