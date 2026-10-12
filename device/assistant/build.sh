@@ -118,6 +118,8 @@ echo "[19c] Compiling use_limit.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/use_limit.c" -o "$BUILD_DIR/use_limit.o"
 echo "[19d] Compiling display_ctrl.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/display_ctrl.c" -o "$BUILD_DIR/display_ctrl.o"
+echo "[19e] Compiling weather_clock.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/weather_clock.c" -o "$BUILD_DIR/weather_clock.o"
 
 echo "Linking sair"
 $CC --sysroot=$SYSROOT \
@@ -148,6 +150,7 @@ $CC --sysroot=$SYSROOT \
     $BUILD_DIR/platform_power.o \
     $BUILD_DIR/use_limit.o \
     $BUILD_DIR/display_ctrl.o \
+    $BUILD_DIR/weather_clock.o \
     -L$STUB_DIR \
     -L$LIB_DIR \
     -L$SYSROOT/usr/lib \

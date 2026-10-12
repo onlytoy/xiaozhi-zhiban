@@ -48,6 +48,7 @@
 #include "watchdog.h"
 #include "use_limit.h"
 #include "display_ctrl.h"
+#include "weather_clock.h"
 #include "audioproc.h"
 #include "config_manager.h"
 #include "plog.h"
@@ -298,7 +299,8 @@ static void sair_emotion_broadcast(int emo_id)
 static void sair_standby_anim_push(void)
 {
     sair_emotion_broadcast(g_app.standby_anim_id);
-    if (g_app.standby_text[0])
+    /* 天气时钟启用时跳过静态待机文字(字幕通道交给天气时钟) */
+    if (g_app.standby_text[0] && !weather_clock_is_enabled())
     {
         sair_subtitle_push(g_app.standby_text);  /* 待机文字(可留空) */
     }
@@ -347,6 +349,7 @@ static void sair_standby_enter(void)
     display_ctrl_manual_on();  /* 已亮返回 1, 不影响原逻辑 */
     /* 字幕清屏不改: Cleaning 已发 0x231(容器 idle 化), 待机文字在其后推送 */
     sair_standby_anim_push();
+    weather_clock_on_standby_enter();
     PLOG_I("STANDBY", "进入待机(会话结束不回主界面), anim_id=%d, %llums 后息屏",
            g_app.standby_anim_id, (unsigned long long)g_app.standby_screenoff_ms);
 }
@@ -357,6 +360,7 @@ static void sair_standby_exit(const char *reason)
     if (!g_app.standby_active)
         return;
     g_app.standby_active = 0;
+    weather_clock_on_standby_exit();
     g_app.standby_screenoff_done = 0;
     display_ctrl_manual_on();  /* 退出待机回桌面: 息屏态则亮屏 */
     sair_subtitle_clear();  /* 清待机文字, 容器回 idle */
@@ -3075,6 +3079,9 @@ int main(int argc, char *argv[])
     /* 待机状态配置(会话结束停留小智界面 + 待机表情) */
     standby_reload_config();
 
+    /* 待机天气时钟(天气抓取线程 + 待机字幕推送) */
+    weather_clock_start();
+
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)
     {
@@ -3389,6 +3396,13 @@ int main(int argc, char *argv[])
 
         /* 待机态轮询: 周期性重播待机表情 / 配置关闭时自动退出待机 */
         standby_tick();
+
+        /* 待机天气时钟: 到点/内容变化时经字幕通道推送(内部去重) */
+        {
+            const char *wcline = weather_clock_tick();
+            if (wcline)
+                sair_subtitle_push(wcline);
+        }
 
         /* 每日动画占位维护(60s 节流, 配置变化时生效) */
         boot_push_tick();

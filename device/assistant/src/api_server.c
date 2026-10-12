@@ -19,6 +19,7 @@
 #include "diag_module.h"
 #include "use_limit.h"
 #include "display_ctrl.h"
+#include "weather_clock.h"
 #include "applib_api.h"
 
 #include <stdio.h>
@@ -129,6 +130,21 @@ void api_server_write_config(void)
     /* 待机状态配置(standby 域, libapconfig 持久) */
     char esc_standby_text[256];
     json_escape(g_app.standby_text, esc_standby_text, sizeof(esc_standby_text));
+    /* 待机天气时钟配置(weather_clock 域, libapconfig 持久) */
+    char wc_en[8] = "0", wc_city[32] = "深圳", wc_lat[16] = "22.5431",
+         wc_lon[16] = "114.0579", wc_upd[8] = "30";
+    if (get_config("WEATHER_CLOCK_ENABLE", wc_en, sizeof(wc_en)) <= 0 || !wc_en[0])
+        snprintf(wc_en, sizeof(wc_en), "0");
+    if (get_config("WEATHER_CITY", wc_city, sizeof(wc_city)) <= 0 || !wc_city[0])
+        snprintf(wc_city, sizeof(wc_city), "深圳");
+    if (get_config("WEATHER_LAT", wc_lat, sizeof(wc_lat)) <= 0 || !wc_lat[0])
+        snprintf(wc_lat, sizeof(wc_lat), "22.5431");
+    if (get_config("WEATHER_LON", wc_lon, sizeof(wc_lon)) <= 0 || !wc_lon[0])
+        snprintf(wc_lon, sizeof(wc_lon), "114.0579");
+    if (get_config("WEATHER_UPDATE_MIN", wc_upd, sizeof(wc_upd)) <= 0 || !wc_upd[0])
+        snprintf(wc_upd, sizeof(wc_upd), "30");
+    char esc_wc_city[96];
+    json_escape(wc_city, esc_wc_city, sizeof(esc_wc_city));
     char buf[4096];
     int len = snprintf(buf, sizeof(buf),
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
@@ -138,6 +154,7 @@ void api_server_write_config(void)
         "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,\"volume\":%d,"
         "\"standby_enable\":%d,\"standby_anim_id\":%d,\"standby_repeat_sec\":%d,"
         "\"standby_text\":\"%s\",\"standby_active\":%d,"
+        "\"weather_clock_enable\":%d,\"weather_city\":\"%s\",\"weather_lat\":\"%s\",\"weather_lon\":\"%s\",\"weather_update_min\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"spans\":\"%s\",\"in_span\":%d}}}\n",
@@ -161,6 +178,11 @@ void api_server_write_config(void)
         (int)(g_app.standby_repeat_ms / 1000u),
         esc_standby_text,
         g_app.standby_active ? 1 : 0,
+        atoi(wc_en),
+        esc_wc_city,
+        wc_lat,
+        wc_lon,
+        atoi(wc_upd),
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -535,6 +557,48 @@ void api_server_check_commands(void)
                 PLOG_I(TAG, "standby 配置已更新: enable=%d anim=%d repeat=%ds",
                        g_app.standby_enable, g_app.standby_anim_id,
                        (int)(g_app.standby_repeat_ms / 1000u));
+                api_server_write_config();
+            }
+        }
+        {
+            /* 待机天气时钟(weather_clock 域): 开关/城市/经纬度/抓取周期, 即时生效 */
+            int wv = -1;
+            int wc_changed = 0;
+            char wbuf[32];
+            if (parse_json_int(buf, "weather_clock_enable", &wv) == 0 && wv >= 0 && wv <= 1)
+            {
+                char sv[8];
+                snprintf(sv, sizeof(sv), "%d", wv);
+                set_config("WEATHER_CLOCK_ENABLE", sv, strlen(sv));
+                wc_changed = 1;
+            }
+            if (parse_json_str(buf, "weather_city", wbuf, sizeof(wbuf)) == 0)
+            {
+                set_config("WEATHER_CITY", wbuf, strlen(wbuf));
+                wc_changed = 1;
+            }
+            if (parse_json_str(buf, "weather_lat", wbuf, sizeof(wbuf)) == 0)
+            {
+                set_config("WEATHER_LAT", wbuf, strlen(wbuf));
+                wc_changed = 1;
+            }
+            if (parse_json_str(buf, "weather_lon", wbuf, sizeof(wbuf)) == 0)
+            {
+                set_config("WEATHER_LON", wbuf, strlen(wbuf));
+                wc_changed = 1;
+            }
+            if (parse_json_int(buf, "weather_update_min", &wv) == 0 && wv >= 5 && wv <= 1440)
+            {
+                char sv[8];
+                snprintf(sv, sizeof(sv), "%d", wv);
+                set_config("WEATHER_UPDATE_MIN", sv, strlen(sv));
+                wc_changed = 1;
+            }
+            if (wc_changed)
+            {
+                sync_config();
+                weather_clock_reload_config();
+                PLOG_I(TAG, "weather_clock 配置已更新");
                 api_server_write_config();
             }
         }
