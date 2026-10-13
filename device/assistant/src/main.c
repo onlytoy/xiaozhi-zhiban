@@ -181,6 +181,17 @@ static int sair_broadcast(void *msg)
  * evaluation.so 的 0x23A 协议(文本@+4)仅在 evaluation 场景加载时有效, 当前不适用。
  * 经 send_async_msg("launcher") 定向推送。
  */
+/* 同步字幕到文件: 供 desk-info 等独立信息台读取显示(原厂 launcher 可能不在) */
+static void sair_subtitle_to_file(const char *text)
+{
+    int fd = open("/tmp/sair_subtitle.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return;
+    if (text && text[0])
+        write(fd, text, strlen(text));
+    close(fd);
+}
+
 static void sair_subtitle_push(const char *text)
 {
     char buf[300];
@@ -190,6 +201,7 @@ static void sair_subtitle_push(const char *text)
     if (text && text[0])
         strncpy(buf + 8, text, sizeof(buf) - 9);
     send_async_msg("launcher", buf);
+    sair_subtitle_to_file(text);   /* 同步给 desk-info */
     g_last_bcast_ms = get_time_ms(); /* 触发回环, 纳入防护窗 */
 }
 
@@ -208,6 +220,7 @@ static void sair_subtitle_clear(void)
     memset(buf, 0, sizeof(buf));
     *(int *)buf = 0x231; /* 会话结束事件, payload[0]=0 → idle 化+清容器 */
     send_async_msg("launcher", buf);
+    sair_subtitle_to_file("");   /* 同步清空给 desk-info */
     g_last_bcast_ms = get_time_ms();
     g_last_end_evt_ms = g_last_bcast_ms;
 }
