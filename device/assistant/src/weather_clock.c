@@ -131,8 +131,17 @@ static int wc_parse_current(const char *body, int *temp_out, int *code_out)
     if (!tp)
         return -1;
     tp += strlen("\"temperature_2m\":");
-    double tv = strtod(tp, NULL);
-    *temp_out = (int)(tv >= 0 ? tv + 0.5 : tv - 0.5);   /* 四舍五入取整 */
+    /* 纯整数解析温度(避免 strtod): 设备原生 uClibc 是 hard-float, 软浮点程序
+     * 调其浮点函数会因 ABI 不匹配返回垃圾值, 见 README《关键约束》浮点 ABI 项。 */
+    int t = atoi(tp);
+    {
+        const char *q = tp;
+        while (*q >= '0' && *q <= '9')
+            q++;                              /* 跳过整数部分 */
+        if (*q == '.' && q[1] >= '5' && q[1] <= '9')
+            t += (t >= 0) ? 1 : -1;           /* 四舍五入 */
+    }
+    *temp_out = t;
 
     const char *wp = strstr(cur, "\"weather_code\":");
     if (!wp)
