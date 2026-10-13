@@ -192,7 +192,10 @@ static void sair_subtitle_to_file(const char *text)
     close(fd);
 }
 
-static void sair_subtitle_push(const char *text)
+/* sync_file=1: 助手对话字幕(TTS/ASR) → 同步给 desk-info 信息台显示
+ * sync_file=0: 待机文字 / 天气时钟文本 → 只走本地字幕通道, 不写文件,
+ *              避免与 desk-info 自己的时钟+天气显示重复 */
+static void sair_subtitle_push_ex(const char *text, int sync_file)
 {
     char buf[300];
     memset(buf, 0, sizeof(buf));
@@ -201,8 +204,19 @@ static void sair_subtitle_push(const char *text)
     if (text && text[0])
         strncpy(buf + 8, text, sizeof(buf) - 9);
     send_async_msg("launcher", buf);
-    sair_subtitle_to_file(text);   /* 同步给 desk-info */
+    if (sync_file)
+        sair_subtitle_to_file(text);   /* 同步给 desk-info */
     g_last_bcast_ms = get_time_ms(); /* 触发回环, 纳入防护窗 */
+}
+
+static void sair_subtitle_push_local(const char *text)
+{
+    sair_subtitle_push_ex(text, 0);
+}
+
+static void sair_subtitle_push(const char *text)
+{
+    sair_subtitle_push_ex(text, 1);
 }
 
 /** 清除屏幕残留字幕（会话结束/自动隐藏/打断时调用）
@@ -315,7 +329,7 @@ static void sair_standby_anim_push(void)
     /* 天气时钟启用时跳过静态待机文字(字幕通道交给天气时钟) */
     if (g_app.standby_text[0] && !weather_clock_is_enabled())
     {
-        sair_subtitle_push(g_app.standby_text);  /* 待机文字(可留空) */
+        sair_subtitle_push_local(g_app.standby_text);  /* 待机文字(可留空) */
     }
 }
 
@@ -3414,7 +3428,7 @@ int main(int argc, char *argv[])
         {
             const char *wcline = weather_clock_tick();
             if (wcline)
-                sair_subtitle_push(wcline);
+                sair_subtitle_push_local(wcline);
         }
 
         /* 每日动画占位维护(60s 节流, 配置变化时生效) */
