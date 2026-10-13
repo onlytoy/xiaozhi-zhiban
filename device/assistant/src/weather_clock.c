@@ -9,7 +9,6 @@
 
 #include "weather_clock.h"
 #include "http_client.h"
-#include "cJSON.h"
 #include "plog.h"
 #include "applib_api.h"            /* get_config */
 
@@ -115,6 +114,35 @@ static const char *wc_code_to_cn(int code)
 /* ------------------------------------------------------------------ */
 /* 天气抓取                                                            */
 /* ------------------------------------------------------------------ */
+/* 从 Open-Meteo 响应里提取 current 温度与天气码。
+ * 纯 strstr 解析(与 api_server.c 同款), 不依赖 cJSON —— 见 README《关键约束》:
+ * uClibc 的 malloc 锁非递归, 子线程里 cJSON 解析/打印会踩锁。 */
+static int wc_parse_current(const char *body, int *temp_out, int *code_out)
+{
+    if (!body || !temp_out || !code_out)
+        return -1;
+
+    /* 定位 "current":{ 对象(避免误命中前面的 "current_units":{) */
+    const char *cur = strstr(body, "\"current\":{");
+    if (!cur)
+        return -1;
+
+    const char *tp = strstr(cur, "\"temperature_2m\":");
+    if (!tp)
+        return -1;
+    tp += strlen("\"temperature_2m\":");
+    double tv = strtod(tp, NULL);
+    *temp_out = (int)(tv >= 0 ? tv + 0.5 : tv - 0.5);   /* 四舍五入取整 */
+
+    const char *wp = strstr(cur, "\"weather_code\":");
+    if (!wp)
+        return -1;
+    wp += strlen("\"weather_code\":");
+    *code_out = atoi(wp);
+
+    return 0;
+}
+
 static int wc_fetch_once(void)
 {
     char url[512];
@@ -132,29 +160,11 @@ static int wc_fetch_once(void)
         return 0;
     }
 
-    cJSON *root = cJSON_Parse(resp.body);
-    if (!root)
-    {
-        PLOG_W("WC", "天气响应 JSON 解析失败");
-        http_response_free(&resp);
-        return 0;
-    }
-
+    int temp = 0, code = 0;
     int ok = 0;
-    cJSON *cur = cJSON_GetObjectItem(root, "current");
-    cJSON *t = NULL;
-    cJSON *code = NULL;
-    if (cur)
+    if (wc_parse_current(resp.body, &temp, &code) == 0)
     {
-        t = cJSON_GetObjectItem(cur, "temperature_2m");
-        code = cJSON_GetObjectItem(cur, "weather_code");
-    }
-    if (t && code && cJSON_IsNumber(t) && cJSON_IsNumber(code))
-    {
-        double tv = t->valuedouble;
-        int temp = (int)(tv >= 0 ? tv + 0.5 : tv - 0.5);   /* 四舍五入取整 */
-        const char *cn = wc_code_to_cn(code->valueint);
-
+        const char *cn = wc_code_to_cn(code);
         char txt[WC_WX_MAX];
         snprintf(txt, sizeof(txt), "%s %d%s", cn, temp, WC_TEMP_SUFFIX);
 
@@ -170,10 +180,9 @@ static int wc_fetch_once(void)
     }
     else
     {
-        PLOG_W("WC", "天气响应缺少 current 字段");
+        PLOG_W("WC", "天气解析失败, body=%.380s", resp.body);
     }
 
-    cJSON_Delete(root);
     http_response_free(&resp);
     return ok;
 }
