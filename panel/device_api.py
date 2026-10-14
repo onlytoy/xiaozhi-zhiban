@@ -243,6 +243,18 @@ class XwebdAPI:
         logger.info("更新助手配置: %s", list(config.keys()))
         return self._request("PUT", "/api/assistant/config", config)
 
+    def get_desk_config(self):
+        """获取桌面时钟插件(desk)配置(天气地区 city/lat/lon 等)"""
+        return self._request("GET", "/api/plugin/desk/config")
+
+    def set_desk_config(self, config):
+        """更新桌面时钟插件(desk)配置。插件端点用表单编码(POST /config),
+        此处把 dict 编码为 x-www-form-urlencoded(UTF-8) 后透传。"""
+        from urllib.parse import urlencode
+        body = urlencode(config).encode("utf-8")
+        return self._request("POST", "/api/plugin/desk/config", body=body,
+                             headers={"Content-Type": "application/x-www-form-urlencoded"})
+
     def poweroff(self):
         return self._request("POST", "/api/poweroff")
 

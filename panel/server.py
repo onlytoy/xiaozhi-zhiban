@@ -359,6 +359,18 @@ def _api_plugins_install(handler, xwebd, body, query):
     return xwebd._request("POST", "/api/plugins/install", data=body)
 
 
+@_api_route("GET", "/api/plugin/desk/config")
+@_requires_xwebd
+def _api_desk_config_get(handler, xwebd, body, query):
+    return xwebd.get_desk_config()
+
+
+@_api_route("PUT", "/api/plugin/desk/config")
+@_requires_xwebd
+def _api_desk_config_put(handler, xwebd, body, query):
+    return xwebd.set_desk_config(body or {})
+
+
 def _scan_local_plugins():
     """扫描本仓库已构建的插件包 + 源码目录自述文本(xwplug_<name>.txt)
 

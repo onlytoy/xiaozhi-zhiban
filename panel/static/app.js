@@ -41,6 +41,7 @@ var PLUGIN_META = {
     usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选、存储卡开关（不装则无 USB 控制）' },
     lights:    { cn: '灯控管理',   desc: '屏幕背光/呼吸灯/按键背光三灯合一（不装则背光滑条与灯开关回落内置）' },
     battery:   { cn: '电池守护',   desc: '电池采样记录 + 低电关机守护（卸载后失去低电保护与电池详情，建议常驻）' },
+    desk:      { cn: '桌面时钟',   desc: '横屏信息台：时钟/日期/天气/助手字幕，接管屏幕并停用原厂桌面' },
     demo:      { cn: '框架演示',   desc: '插件框架演示与崩溃隔离测试，可安全卸载' }
 };
 
@@ -1417,6 +1418,16 @@ async function refreshPlugins() {
                 }).join('');
                 html += '<div class="battery-detail"><div class="batt-kv">' + bhtml + '</div></div>';
             }
+            /* 桌面时钟: 天气地区配置内嵌插件条目 */
+            if (p.name === 'desk') {
+                var dc = S.deskCfg || {};
+                html += '<div class="desk-cfg">';
+                html += '<div class="desk-cfg-row"><span class="stat-label">城市</span><input id="deskCity" class="desk-input" placeholder="深圳" value="' + escapeHtml(dc.city || '') + '"></div>';
+                html += '<div class="desk-cfg-row"><span class="stat-label">纬度</span><input id="deskLat" class="desk-input" placeholder="22.5431" value="' + escapeHtml(dc.lat || '') + '"></div>';
+                html += '<div class="desk-cfg-row"><span class="stat-label">经度</span><input id="deskLon" class="desk-input" placeholder="114.0579" value="' + escapeHtml(dc.lon || '') + '"></div>';
+                html += '<button class="btn btn-primary btn-sm" onclick="deskConfigSave()">保存天气地区</button>';
+                html += '</div>';
+            }
             html += '<div class="plugin-foot">';
             if (p.restarts) html += '<span class="svc-hint">重启 ' + p.restarts + ' 次</span>';
             if (p.name === 'usb') {
@@ -1444,6 +1455,35 @@ async function refreshPlugins() {
     }
     $('plugList').innerHTML = html;
     blOnInput(); /* 背光滑条重渲染后补 --fill 渐变 */
+    if (plugs.some(function(p) { return p.name === 'desk'; })) deskConfigLoad();
+}
+
+async function deskConfigLoad() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/plugin/desk/config');
+    if (r.error) return;
+    S.deskCfg = r;
+    var map = { city: 'deskCity', lat: 'deskLat', lon: 'deskLon' };
+    Object.keys(map).forEach(function(k) {
+        var el = $(map[k]);
+        if (el) el.value = r[k] || '';
+    });
+}
+
+async function deskConfigSave() {
+    if (!S.wl.connected) return;
+    var cfg = {
+        city: $('deskCity').value,
+        lat: $('deskLat').value,
+        lon: $('deskLon').value
+    };
+    var r = await api('/api/plugin/desk/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+    });
+    if (r.ok || !r.error) toast('天气地区已保存', 'success');
+    else toast('保存失败: ' + (r.error || ''), 'error');
 }
 
 async function pluginRestart(name) {
