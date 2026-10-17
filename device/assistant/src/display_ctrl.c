@@ -226,14 +226,21 @@ int display_ctrl_is_off(void)
 
 int display_ctrl_manual_on(void)
 {
-    /* MCP 主动亮屏: 息屏态恢复亮度并清手动标志(会话结束亮屏逻辑回归) */
-    if (g_dc.screen_off)
+    /* 亮屏: 息屏态恢复亮度并清手动标志(会话结束亮屏逻辑回归)。
+     * 原厂屏保/空闲息屏可能直接关掉背光(bl_power=1), 而 sair 的
+     * screen_off 标志仍是 0 —— 语音唤醒必须照样把屏点亮. */
+    if (!g_dc.screen_off && read_bl_power() == 0)
+        return 1; /* 本来就亮着 */
+
+    if (!g_dc.screen_off)
     {
-        g_dc.manual_off = 0;
-        screen_on_restore("mcp-screen-on");
-        return 0;
+        /* 实际已关但标志未同步(原厂息屏): 同步状态并保存当前亮度 */
+        g_dc.screen_off = 1;
+        g_dc.saved_brightness = read_brightness(200);
     }
-    return 1; /* 本来就亮着 */
+    g_dc.manual_off = 0;
+    screen_on_restore("wakeup");
+    return 0;
 }
 
 int display_ctrl_notify_input(void)
